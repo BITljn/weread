@@ -19,11 +19,13 @@ if "-h" in sys.argv or "--help" in sys.argv:
   %(prog)s                    从读书列表随机选书
   %(prog)s -b 三体            指定阅读《三体》
   %(prog)s --book 活着        指定阅读《活着》
+  %(prog)s -u user1           使用 user1 用户
   %(prog)s -H                 无头模式（测试用）
   %(prog)s -h                 查看使用说明
         """,
     )
     _p.add_argument("-b", "--book", metavar="书名", help="指定要阅读的书名")
+    _p.add_argument("-u", "--user", metavar="用户", default="admin", help="指定用户，默认 admin")
     _p.add_argument("-H", "--headless", action="store_true", help="强制无头模式（测试用）")
     _p.parse_args()
     sys.exit(0)
@@ -60,21 +62,72 @@ WEREAD_URL = "https://weread.qq.com"
 SEARCH_URL_TEMPLATE = "https://weread.qq.com/web/search/books?keyword={keyword}"
 LOGIN_TIMEOUT = 300  # 单次扫码等待超时（秒）
 LOGIN_MAX_RETRIES = 2  # 超时后重试次数（共 1 + 2 = 3 次尝试）
-COOKIE_FILE = BASE_DIR / "weread_cookies.json"
-CONFIG_FILE = BASE_DIR / "config.json"
+CONFIG_DIR = BASE_DIR / "config"
+CONFIG_FILE = BASE_DIR / "config.json"  # 全局配置（兼容旧版）
 LOG_FILE = BASE_DIR / "log" / "weread.log"
-QR_CODE_FILE = BASE_DIR / "data" / "login.png"
-LAST_READ_FILE = BASE_DIR / "data" / "last_read.json"
 
-DEFAULT_CONFIG = {
+DEFAULT_GLOBAL = {
     "book_list_file": "books.txt",
     "reading_duration": 60,
-    "use_cookie_login": True,
     "headless": False,
+}
+
+DEFAULT_USER = {
+    "use_cookie_login": True,
     "wechat_webhook_url": "",
 }
 
 log = logging.getLogger(__name__)
+
+
+def get_user_paths(user: str) -> dict:
+    """获取用户专属文件路径：cookies、二维码、阅读记录"""
+    user_dir = BASE_DIR / "data" / "users" / user
+    return {
+        "cookie_file": user_dir / "cookies.json",
+        "qr_file": user_dir / "login.png",
+        "last_read_file": user_dir / "last_read.json",
+    }
+
+
+def load_config(user: str = "admin") -> dict:
+    """
+    加载配置：全局 + 用户，用户配置覆盖全局。
+    支持两种方式：
+    1) config.json 含 users 键：全局为其余键，用户为 users[user]
+    2) config.json + config/users/{user}.json：全局用 config.json，用户用独立文件
+    """
+    global_config = DEFAULT_GLOBAL.copy()
+    users_section = None
+    for path in [CONFIG_FILE, CONFIG_DIR / "global.json"]:
+        if path.exists():
+            try:
+                with open(path, encoding="utf-8") as f:
+                    loaded = json.load(f)
+                if "users" in loaded:
+                    users_section = loaded.pop("users")
+                    global_config.update(loaded)
+                else:
+                    global_config.update(loaded)
+            except Exception as e:
+                logging.warning("加载全局配置失败 %s: %s", path, e)
+            break
+
+    user_config = DEFAULT_USER.copy()
+    if users_section and isinstance(users_section, dict) and user in users_section:
+        user_config.update(users_section[user])
+    user_file = CONFIG_DIR / "users" / f"{user}.json"
+    if user_file.exists():
+        try:
+            with open(user_file, encoding="utf-8") as f:
+                user_config.update(json.load(f))
+        except Exception as e:
+            logging.warning("加载用户配置失败 %s: %s", user_file, e)
+
+    merged = {**global_config, **user_config}
+    merged["_user"] = user
+    merged["_paths"] = get_user_paths(user)
+    return merged
 
 
 def get_recent_log_lines(lines: int = 50) -> str:
@@ -111,19 +164,6 @@ def setup_logging() -> None:
     root.addHandler(fh)
 
 
-def load_config() -> dict:
-    """加载配置文件，缺失项使用默认值"""
-    config = DEFAULT_CONFIG.copy()
-    if CONFIG_FILE.exists():
-        try:
-            with open(CONFIG_FILE, encoding="utf-8") as f:
-                loaded = json.load(f)
-            config.update(loaded)
-        except Exception as e:
-            logging.warning("加载配置失败 %s，使用默认配置: %s", CONFIG_FILE, e)
-    return config
-
-
 def should_use_headless(config: dict) -> bool:
     """
     判断是否使用无头模式，支持有/无图形界面的 Ubuntu 与 Mac。
@@ -138,23 +178,23 @@ def should_use_headless(config: dict) -> bool:
     return False
 
 
-def save_last_read(book_name: str, completed: bool) -> None:
+def save_last_read(book_name: str, completed: bool, last_read_file: Path) -> None:
     """记录本次阅读的书名及是否读完，供下次选书时参考"""
-    LAST_READ_FILE.parent.mkdir(parents=True, exist_ok=True)
+    last_read_file.parent.mkdir(parents=True, exist_ok=True)
     try:
-        with open(LAST_READ_FILE, "w", encoding="utf-8") as f:
+        with open(last_read_file, "w", encoding="utf-8") as f:
             json.dump({"book": book_name, "completed": completed}, f, ensure_ascii=False, indent=2)
         log.info("已记录阅读: %s，读完=%s", book_name, completed)
     except Exception as e:
         log.warning("保存阅读记录失败: %s", e)
 
 
-def load_last_read() -> dict | None:
+def load_last_read(last_read_file: Path) -> dict | None:
     """加载上次阅读记录，返回 {book, completed} 或 None"""
-    if not LAST_READ_FILE.exists():
+    if not last_read_file.exists():
         return None
     try:
-        with open(LAST_READ_FILE, encoding="utf-8") as f:
+        with open(last_read_file, encoding="utf-8") as f:
             data = json.load(f)
         if isinstance(data, dict) and "book" in data:
             return data
@@ -189,13 +229,19 @@ def get_book_from_list(config: dict, exclude_completed: str | None = None) -> st
     return random.choice(books) if books else None
 
 
-def load_cookies(driver: webdriver.Chrome) -> bool:
-    """加载已保存的 cookies，返回是否成功加载"""
-    if not COOKIE_FILE.exists():
+def load_cookies(driver: webdriver.Chrome, cookie_file: Path) -> bool:
+    """加载已保存的 cookies，返回是否成功加载。兼容旧版 weread_cookies.json"""
+    to_load = cookie_file
+    if not to_load.exists() and cookie_file.name == "cookies.json":
+        legacy = BASE_DIR / "weread_cookies.json"
+        if legacy.exists():
+            to_load = legacy
+            log.info("使用旧版 cookies 文件 %s（建议迁移到 %s）", legacy, cookie_file)
+    if not to_load.exists():
         log.info("未找到已保存的 cookies 文件")
         return False
     try:
-        with open(COOKIE_FILE, encoding="utf-8") as f:
+        with open(to_load, encoding="utf-8") as f:
             cookies = json.load(f)
         for cookie in cookies:
             if "expiry" in cookie:
@@ -204,20 +250,21 @@ def load_cookies(driver: webdriver.Chrome) -> bool:
                 driver.add_cookie(cookie)
             except Exception:
                 pass
-        log.info("已从 %s 加载 %d 个 cookies", COOKIE_FILE, len(cookies))
+        log.info("已从 %s 加载 %d 个 cookies", to_load, len(cookies))
         return True
     except Exception as e:
         log.warning("加载 cookies 失败: %s", e)
         return False
 
 
-def save_cookies(driver: webdriver.Chrome) -> None:
+def save_cookies(driver: webdriver.Chrome, cookie_file: Path) -> None:
     """保存 cookies 到文件"""
+    cookie_file.parent.mkdir(parents=True, exist_ok=True)
     try:
         cookies = driver.get_cookies()
-        with open(COOKIE_FILE, "w", encoding="utf-8") as f:
+        with open(cookie_file, "w", encoding="utf-8") as f:
             json.dump(cookies, f, ensure_ascii=False, indent=2)
-        log.info("登录状态已保存至 %s", COOKIE_FILE)
+        log.info("登录状态已保存至 %s", cookie_file)
     except Exception as e:
         log.warning("保存 cookies 失败: %s", e)
 
@@ -338,9 +385,9 @@ def wait_for_login(driver: webdriver.Chrome) -> bool:
         return False
 
 
-def save_qr_code(driver: webdriver.Chrome) -> bool:
-    """将登录二维码保存到 data/login.png"""
-    QR_CODE_FILE.parent.mkdir(parents=True, exist_ok=True)
+def save_qr_code(driver: webdriver.Chrome, qr_file: Path) -> bool:
+    """将登录二维码保存到指定路径"""
+    qr_file.parent.mkdir(parents=True, exist_ok=True)
     qr_selectors = [
         "img[src*='qrcode']",
         "canvas",
@@ -358,23 +405,23 @@ def save_qr_code(driver: webdriver.Chrome) -> bool:
                     except Exception:
                         w = 100
                     if w > 50:
-                        e.screenshot(str(QR_CODE_FILE))
-                        log.info("二维码已保存至 %s", QR_CODE_FILE)
+                        e.screenshot(str(qr_file))
+                        log.info("二维码已保存至 %s", qr_file)
                         return True
         except Exception:
             continue
     # 备选：截取整个页面（登录弹窗通常居中）
     try:
-        driver.save_screenshot(str(QR_CODE_FILE))
-        log.info("已保存页面截图至 %s（若二维码不清晰可手动查看）", QR_CODE_FILE)
+        driver.save_screenshot(str(qr_file))
+        log.info("已保存页面截图至 %s（若二维码不清晰可手动查看）", qr_file)
         return True
     except Exception as e:
         log.warning("保存二维码失败: %s", e)
     return False
 
 
-def click_login(driver: webdriver.Chrome, save_qr: bool = True, headless: bool = False) -> bool:
-    """点击登录按钮，打开二维码，保存到 data/login.png。无头模式下用户需下载该图扫码"""
+def click_login(driver: webdriver.Chrome, qr_file: Path, save_qr: bool = True, headless: bool = False) -> bool:
+    """点击登录按钮，打开二维码，保存到指定路径。无头模式下用户需下载该图扫码"""
     wait = WebDriverWait(driver, 15)
     login_selectors = [
         (By.LINK_TEXT, "登录"),
@@ -389,9 +436,9 @@ def click_login(driver: webdriver.Chrome, save_qr: bool = True, headless: bool =
             btn.click()
             time.sleep(3 if headless else 2)  # 无头模式多等 1 秒确保二维码渲染
             if save_qr:
-                save_qr_code(driver)
+                save_qr_code(driver, qr_file)
                 if headless:
-                    log.info("无头模式：请下载 data/login.png 到本地，用微信扫码登录")
+                    log.info("无头模式：请下载 %s 到本地，用微信扫码登录", qr_file)
             return True
         except Exception:
             continue
@@ -571,20 +618,28 @@ def main() -> int:
         action="store_true",
         help="强制无头模式，用于在 Mac/Ubuntu 桌面测试无头行为",
     )
+    parser.add_argument(
+        "-u", "--user",
+        metavar="用户",
+        default="admin",
+        help="指定用户，加载对应用户配置和独立数据（cookies、阅读记录等），默认 admin",
+    )
     args = parser.parse_args()
 
     setup_logging()
-    config = load_config()
+    user = args.user or "admin"
+    config = load_config(user)
+    paths = config["_paths"]
     headless = args.headless or should_use_headless(config)
     if headless and not config.get("headless", False):
         log.info("检测到无图形界面（Linux 无 DISPLAY），自动启用无头模式")
-    log.info("配置: 读书列表=%s, 阅读时长=%d秒, 使用Cookie登录=%s, 无头模式=%s",
-             config["book_list_file"], config["reading_duration"], config["use_cookie_login"], headless)
+    log.info("用户: %s | 配置: 读书列表=%s, 阅读时长=%d秒, 使用Cookie登录=%s, 无头模式=%s",
+             user, config["book_list_file"], config["reading_duration"], config["use_cookie_login"], headless)
     log.info("========== 微信读书自动化阅读程序启动 ==========")
 
     book_name = args.book
     if not book_name:
-        last = load_last_read()
+        last = load_last_read(paths["last_read_file"])
         exclude = last["book"] if (last and last.get("completed")) else None
         if exclude:
             log.info("上次已读完《%s》，本次将选取新书", exclude)
@@ -614,7 +669,7 @@ def main() -> int:
         time.sleep(2)
 
         # 尝试加载已保存的 cookies（仅当配置启用时）
-        if use_cookie and load_cookies(driver):
+        if use_cookie and load_cookies(driver, paths["cookie_file"]):
             log.info("已加载本地 cookies，刷新页面验证")
             driver.refresh()
             time.sleep(3)
@@ -624,7 +679,7 @@ def main() -> int:
         # 未登录则扫码（登录过期场景），超时后重试 2 次
         if not is_logged_in(driver):
             log.info("步骤 3/5: 需要登录，进入扫码流程（超时 %d 秒，最多重试 %d 次）", LOGIN_TIMEOUT, LOGIN_MAX_RETRIES)
-            if not click_login(driver, save_qr=True, headless=headless):
+            if not click_login(driver, paths["qr_file"], save_qr=True, headless=headless):
                 log.warning("未找到登录按钮，假定已登录，继续执行")
             else:
                 login_success_flag = False
@@ -633,15 +688,15 @@ def main() -> int:
                         log.info("第 %d 次尝试：刷新页面并重新获取二维码", attempt)
                         driver.get(WEREAD_URL)
                         time.sleep(2)
-                        if not click_login(driver, save_qr=True, headless=headless):
+                        if not click_login(driver, paths["qr_file"], save_qr=True, headless=headless):
                             log.warning("重试时未找到登录按钮")
                             break
                     # 登录过期：发送二维码和扫码说明
-                    if webhook_url and QR_CODE_FILE.exists():
-                        notify_login_required(webhook_url, QR_CODE_FILE)
+                    if webhook_url and paths["qr_file"].exists():
+                        notify_login_required(webhook_url, paths["qr_file"])
                     if wait_for_login(driver):
                         login_success_flag = True
-                        save_cookies(driver)
+                        save_cookies(driver, paths["cookie_file"])
                         if webhook_url:
                             notify_login_success(webhook_url)
                         break
@@ -668,7 +723,7 @@ def main() -> int:
 
         log.info("步骤 5/5: 模拟阅读（时长 %d 秒）", reading_duration)
         summary = simulate_reading(driver, duration=reading_duration)
-        save_last_read(book_name, summary["book_ended"])
+        save_last_read(book_name, summary["book_ended"], paths["last_read_file"])
         log.info("========== 所有步骤执行完成 ==========")
         exit_code = 0
 

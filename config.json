@@ -1,7 +1,11 @@
 {
   "book_list_file": "books.txt",
   "reading_duration": 60,
-  "use_cookie_login": true,
   "headless": false,
-  "wechat_webhook_url": "https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=c66f9636-1805-4bd5-923a-6d58247eecec"
+  "users": {
+    "admin": {
+      "use_cookie_login": true,
+      "wechat_webhook_url": "https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=c66f9636-1805-4bd5-923a-6d58247eecec"
+    }
+  }
 }

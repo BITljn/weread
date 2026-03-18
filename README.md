@@ -85,6 +85,7 @@ pip install -r requirements.txt
 |------|------|
 | `-h`, `--help` | 显示程序使用说明并退出 |
 | `-b 书名`, `--book 书名` | 指定要阅读的书名。不指定则从读书列表中随机选取一本 |
+| `-u 用户`, `--user 用户` | 指定用户，默认 admin。不同用户有独立的 cookies、阅读记录和部分配置 |
 | `-H`, `--headless` | 强制无头模式，用于在 Mac/Ubuntu 桌面测试无头行为 |
 
 ### 使用示例
@@ -102,6 +103,10 @@ python main.py --book 三体
 
 # 在 Mac/Ubuntu 桌面模拟无头模式测试
 python main.py -H -b 三体
+
+# 使用指定用户（默认 admin）
+python main.py -u admin -b 三体
+python main.py -u user1
 ```
 
 ### 运行环境与模式
@@ -109,20 +114,55 @@ python main.py -H -b 三体
 | 环境 | 行为 | 说明 |
 |------|------|------|
 | Ubuntu 有图形 | 有头模式 | 弹出 Chrome 窗口，二维码直接显示 |
-| Ubuntu 无图形 (Server) | **自动**无头 | 检测无 DISPLAY 时自动切换，二维码保存到 `data/login.png` |
+| Ubuntu 无图形 (Server) | **自动**无头 | 检测无 DISPLAY 时自动切换，二维码保存到 `data/users/{用户}/login.png` |
 | Mac | 有头模式 | 弹出 Chrome 窗口；加 `-H` 可测试无头 |
 | 任意环境 | 强制无头 | `config.json` 中 `"headless": true` 或命令行 `-H` |
 
 同一份代码和配置可在三种环境下运行，无需修改。
 
-## 配置 (config.json)
+## 配置
 
-| 配置项 | 说明 | 默认值 |
-|--------|------|--------|
-| book_list_file | 读书列表文件路径，每行一个书名 | books.txt |
-| reading_duration | 每次阅读时长（秒） | 60 |
-| use_cookie_login | 是否使用 Cookie 登录（设为 false 可方便调试扫码流程） | true |
-| headless | 无头模式（无图形界面，适用于 Ubuntu Server） | false |
+### 全局与用户配置
+
+- **全局**：`config.json` 顶层或 `config/global.json`（`book_list_file`、`reading_duration`、`headless`）
+- **用户**：`config.json` 的 `users` 段，或 `config/users/{用户}.json`（`use_cookie_login`、`wechat_webhook_url`）
+
+### config.json 示例
+
+```json
+{
+  "book_list_file": "books.txt",
+  "reading_duration": 60,
+  "headless": false,
+  "users": {
+    "admin": {
+      "use_cookie_login": true,
+      "wechat_webhook_url": "https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=xxx"
+    },
+    "user1": {
+      "use_cookie_login": true,
+      "wechat_webhook_url": ""
+    }
+  }
+}
+```
+
+### 配置项说明
+
+| 配置项 | 作用域 | 说明 | 默认值 |
+|--------|--------|------|--------|
+| book_list_file | 全局 | 读书列表文件路径 | books.txt |
+| reading_duration | 全局 | 每次阅读时长（秒） | 60 |
+| headless | 全局 | 无头模式 | false |
+| use_cookie_login | 用户 | 是否使用 Cookie 登录 | true |
+| wechat_webhook_url | 用户 | 企业微信机器人 Webhook | "" |
+
+### 用户数据目录
+
+每个用户的数据存放在 `data/users/{用户}/`：
+- `cookies.json`：登录 cookies
+- `login.png`：登录二维码（扫码时生成）
+- `last_read.json`：上次阅读记录
 | wechat_webhook_url | 企业微信机器人 Webhook 地址，用于任务通知（crontab 场景） | 空 |
 
 ### 企业微信通知（crontab 场景）
