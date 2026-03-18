@@ -1,0 +1,7 @@
+{
+  "execution_time": "",
+  "book_list_file": "books.txt",
+  "reading_duration": 70,
+  "headless": true,
+  "use_cookie_login": true
+}

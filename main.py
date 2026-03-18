@@ -36,6 +36,9 @@ import os
 import platform
 import random
 import shutil
+import signal
+import sys
+import threading
 import time
 import traceback
 from pathlib import Path
@@ -62,9 +65,11 @@ WEREAD_URL = "https://weread.qq.com"
 SEARCH_URL_TEMPLATE = "https://weread.qq.com/web/search/books?keyword={keyword}"
 LOGIN_TIMEOUT = 300  # 单次扫码等待超时（秒）
 LOGIN_MAX_RETRIES = 2  # 超时后重试次数（共 1 + 2 = 3 次尝试）
-CONFIG_DIR = BASE_DIR / "config"
-CONFIG_FILE = BASE_DIR / "config.json"  # 全局配置（兼容旧版）
-LOG_FILE = BASE_DIR / "log" / "weread.log"
+PAGE_LOAD_TIMEOUT = 60  # 页面加载超时（秒），防止 driver.get() 无限阻塞
+SCRIPT_TIMEOUT = 30  # 脚本执行超时（秒）
+DRIVER_QUIT_TIMEOUT = 10  # driver.quit() 超时（秒），防止退出时卡死
+GLOBAL_CONFIG_FILE = BASE_DIR / "global.json"  # 全局配置（根目录）
+USER_CONFIG_ONLY_KEYS = ("wechat_webhook_url",)  # 仅能从用户私有配置读取，公共配置不可覆盖
 
 DEFAULT_GLOBAL = {
     "book_list_file": "books.txt",
@@ -79,72 +84,85 @@ DEFAULT_USER = {
 
 log = logging.getLogger(__name__)
 
+# 用于 SIGTERM 时优雅退出（SIGINT/Ctrl+C 由 Python 默认转为 KeyboardInterrupt，已有处理）
+_shutdown_requested = False
+
+
+def _sigterm_handler(signum, frame):
+    """处理 SIGTERM（kill、systemd stop 等），触发优雅退出"""
+    global _shutdown_requested
+    if _shutdown_requested:
+        return
+    _shutdown_requested = True
+    log.warning("收到 SIGTERM，正在优雅退出...")
+    sys.exit(143)  # 128 + 15
+
 
 def get_user_paths(user: str) -> dict:
-    """获取用户专属文件路径：cookies、二维码、阅读记录"""
+    """获取用户专属文件路径：cookies、二维码、阅读记录、读书列表、日志"""
     user_dir = BASE_DIR / "data" / "users" / user
     return {
+        "user_dir": user_dir,
         "cookie_file": user_dir / "cookies.json",
         "qr_file": user_dir / "login.png",
         "last_read_file": user_dir / "last_read.json",
+        "log_file": user_dir / "weread.log",
     }
 
 
 def load_config(user: str = "admin") -> dict:
     """
-    加载配置：全局 + 用户，用户配置覆盖全局。
-    支持两种方式：
-    1) config.json 含 users 键：全局为其余键，用户为 users[user]
-    2) config.json + config/users/{user}.json：全局用 config.json，用户用独立文件
+    加载配置：全局配置 + 用户私有配置，用户配置覆盖全局配置。
+    - 全局配置：根目录 global.json
+    - 用户私有配置：data/users/{用户}/config.json（必须存在）
+    - wechat_webhook_url 仅能从用户私有配置读取，全局配置不可覆盖
     """
-    global_config = DEFAULT_GLOBAL.copy()
-    users_section = None
-    for path in [CONFIG_FILE, CONFIG_DIR / "global.json"]:
-        if path.exists():
-            try:
-                with open(path, encoding="utf-8") as f:
-                    loaded = json.load(f)
-                if "users" in loaded:
-                    users_section = loaded.pop("users")
-                    global_config.update(loaded)
-                else:
-                    global_config.update(loaded)
-            except Exception as e:
-                logging.warning("加载全局配置失败 %s: %s", path, e)
-            break
+    user_config_path = BASE_DIR / "data" / "users" / user / "config.json"
+    if not user_config_path.exists():
+        print(f"错误：用户配置文件不存在: {user_config_path}\n执行时必须提供用户私有配置，请创建该文件。", file=sys.stderr)
+        sys.exit(1)
 
-    user_config = DEFAULT_USER.copy()
-    if users_section and isinstance(users_section, dict) and user in users_section:
-        user_config.update(users_section[user])
-    user_file = CONFIG_DIR / "users" / f"{user}.json"
-    if user_file.exists():
+    # 全局配置（排除仅用户可配置项）
+    public_config = DEFAULT_GLOBAL.copy()
+    if GLOBAL_CONFIG_FILE.exists():
         try:
-            with open(user_file, encoding="utf-8") as f:
-                user_config.update(json.load(f))
+            with open(GLOBAL_CONFIG_FILE, encoding="utf-8") as f:
+                loaded = json.load(f)
+            for k, v in loaded.items():
+                if k not in USER_CONFIG_ONLY_KEYS:
+                    public_config[k] = v
         except Exception as e:
-            logging.warning("加载用户配置失败 %s: %s", user_file, e)
+            logging.warning("加载全局配置失败 %s: %s", GLOBAL_CONFIG_FILE, e)
 
-    merged = {**global_config, **user_config}
+    # 用户私有配置（所有项均可覆盖公共配置）
+    user_config = DEFAULT_USER.copy()
+    try:
+        with open(user_config_path, encoding="utf-8") as f:
+            user_config.update(json.load(f))
+    except Exception as e:
+        logging.warning("加载用户配置失败 %s: %s", user_config_path, e)
+
+    merged = {**public_config, **user_config}
     merged["_user"] = user
     merged["_paths"] = get_user_paths(user)
     return merged
 
 
-def get_recent_log_lines(lines: int = 50) -> str:
+def get_recent_log_lines(log_file: Path, lines: int = 50) -> str:
     """读取日志文件最后 N 行，用于错误通知"""
-    if not LOG_FILE.exists():
+    if not log_file.exists():
         return ""
     try:
-        with open(LOG_FILE, encoding="utf-8") as f:
+        with open(log_file, encoding="utf-8") as f:
             all_lines = f.readlines()
         return "".join(all_lines[-lines:]).strip()
     except Exception:
         return ""
 
 
-def setup_logging() -> None:
-    """配置日志：同时输出到控制台和 log/weread.log"""
-    LOG_FILE.parent.mkdir(parents=True, exist_ok=True)
+def setup_logging(log_file: Path) -> None:
+    """配置日志：同时输出到控制台和指定日志文件"""
+    log_file.parent.mkdir(parents=True, exist_ok=True)
     fmt = "%(asctime)s [%(levelname)s] %(message)s"
     datefmt = "%Y-%m-%d %H:%M:%S"
 
@@ -159,7 +177,7 @@ def setup_logging() -> None:
     root.addHandler(sh)
 
     # 文件
-    fh = logging.FileHandler(LOG_FILE, encoding="utf-8")
+    fh = logging.FileHandler(log_file, encoding="utf-8")
     fh.setFormatter(logging.Formatter(fmt, datefmt))
     root.addHandler(fh)
 
@@ -207,14 +225,28 @@ def get_book_from_list(config: dict, exclude_completed: str | None = None) -> st
     """
     从读书列表文件随机选取一本书。
     文件格式：每行一个书名。
+    优先级：用户目录下存在 books.txt 时，直接使用（book_list_file 不生效）；否则按 book_list_file 解析。
     若 exclude_completed 非空，则排除该书（用于上次已读完时换新书）。
     """
-    book_file = Path(config["book_list_file"])
-    if not book_file.is_absolute():
-        book_file = BASE_DIR / book_file
-    if not book_file.exists():
-        log.warning("读书列表文件不存在: %s", book_file)
-        return None
+    user_dir = config["_paths"]["user_dir"]
+    default_user_books = user_dir / "books.txt"
+
+    # 用户目录下有 books.txt 时，直接使用，book_list_file 不生效
+    if default_user_books.exists():
+        book_file = default_user_books
+    else:
+        book_file = Path(config["book_list_file"])
+        if not book_file.is_absolute():
+            book_file = user_dir / book_file
+        # 兼容：用户目录下不存在时，尝试项目根目录（旧版位置）
+        if not book_file.exists():
+            fallback = BASE_DIR / Path(config["book_list_file"]).name
+            if fallback.exists():
+                book_file = fallback
+                log.info("使用项目根目录的读书列表 %s（建议复制到 %s）", fallback, user_dir / config["book_list_file"])
+            else:
+                log.warning("读书列表文件不存在: %s", book_file)
+                return None
     with open(book_file, encoding="utf-8") as f:
         books = [line.strip() for line in f if line.strip()]
     if not books:
@@ -339,10 +371,34 @@ def create_driver(headless: bool = False) -> webdriver.Chrome:
 
     service = Service(ChromeDriverManager().install())
     driver = webdriver.Chrome(service=service, options=options)
+    driver.set_page_load_timeout(PAGE_LOAD_TIMEOUT)
+    driver.set_script_timeout(SCRIPT_TIMEOUT)
     driver.execute_script(
         "Object.defineProperty(navigator, 'webdriver', {get: () => undefined})"
     )
     return driver
+
+
+def quit_driver_safe(driver: webdriver.Chrome | None) -> None:
+    """安全关闭浏览器，带超时，防止 quit() 卡死导致程序无法退出"""
+    if not driver:
+        return
+    result = {"done": False, "error": None}
+
+    def _quit():
+        try:
+            driver.quit()
+            result["done"] = True
+        except Exception as e:
+            result["error"] = e
+
+    t = threading.Thread(target=_quit, daemon=True)
+    t.start()
+    t.join(timeout=DRIVER_QUIT_TIMEOUT)
+    if t.is_alive():
+        log.warning("driver.quit() 超时（%d 秒），Chrome 进程可能仍在运行，程序继续退出", DRIVER_QUIT_TIMEOUT)
+    elif result.get("error"):
+        log.warning("driver.quit() 异常: %s", result["error"])
 
 
 def wait_for_login(driver: webdriver.Chrome) -> bool:
@@ -359,6 +415,8 @@ def wait_for_login(driver: webdriver.Chrome) -> bool:
         # 登录成功后可能跳转到书架、首页或停留在当前页但二维码消失
         # 检测：当前 URL 包含 /web/shelf 或 /web/reader，或二维码容器消失
         def login_success(d):
+            if _shutdown_requested:
+                raise KeyboardInterrupt("收到退出信号")
             url = d.current_url
             # 已跳转到书架或阅读页
             if "/web/shelf" in url or "/web/reader/" in url:
@@ -556,7 +614,7 @@ def simulate_reading(driver: webdriver.Chrome, duration: int) -> dict:
     except Exception:
         log.debug("未找到阅读区域，继续执行")
 
-    while time.time() - start < duration:
+    while time.time() - start < duration and not _shutdown_requested:
         elapsed = int(time.time() - start)
         remaining = max(0, duration - elapsed)
 
@@ -582,9 +640,13 @@ def simulate_reading(driver: webdriver.Chrome, duration: int) -> dict:
             else:
                 log.info("已阅读 %d 秒，剩余 %d 秒，累计翻页 %d 次", elapsed, remaining, turn_count)
 
-        # 随机停顿 3-8 秒
+        # 随机停顿 3-8 秒（可被 Ctrl+C 中断）
         pause = random.uniform(3, 8)
-        time.sleep(min(pause, remaining))
+        try:
+            time.sleep(min(pause, remaining))
+        except KeyboardInterrupt:
+            log.info("阅读被中断，正在退出...")
+            raise  # 交由 main 的 except 处理，确保 finally 执行
 
     duration_sec = time.time() - start
     log.info("阅读完成，共滚动 %d 次、翻页 %d 次，总耗时 %.1f 秒", scroll_count, turn_count, duration_sec)
@@ -611,7 +673,7 @@ def main() -> int:
     parser.add_argument(
         "-b", "--book",
         metavar="书名",
-        help="指定要阅读的书名。不指定则从 config.json 中 book_list_file 对应的列表随机选取",
+        help="指定要阅读的书名。不指定则从读书列表随机选取",
     )
     parser.add_argument(
         "-H", "--headless",
@@ -626,10 +688,14 @@ def main() -> int:
     )
     args = parser.parse_args()
 
-    setup_logging()
+    # 注册 SIGTERM 处理器，支持 kill、systemd stop 等场景下的优雅退出
+    if hasattr(signal, "SIGTERM"):
+        signal.signal(signal.SIGTERM, _sigterm_handler)
+
     user = args.user or "admin"
     config = load_config(user)
     paths = config["_paths"]
+    setup_logging(paths["log_file"])
     headless = args.headless or should_use_headless(config)
     if headless and not config.get("headless", False):
         log.info("检测到无图形界面（Linux 无 DISPLAY），自动启用无头模式")
@@ -654,12 +720,12 @@ def main() -> int:
     driver = None
     exit_code = 0
     use_cookie = config.get("use_cookie_login", True)
-    reading_duration = config.get("reading_duration", 60)
+    reading_duration = config.get("reading_duration") or config.get("duration", 60)
     webhook_url = config.get("wechat_webhook_url", "")
 
     # 任务开始通知
     if webhook_url:
-        notify_task_start(webhook_url, book_name)
+        notify_task_start(webhook_url, book_name, user)
 
     try:
         log.info("步骤 1/5: 启动 Chrome 浏览器")
@@ -693,19 +759,19 @@ def main() -> int:
                             break
                     # 登录过期：发送二维码和扫码说明
                     if webhook_url and paths["qr_file"].exists():
-                        notify_login_required(webhook_url, paths["qr_file"])
+                        notify_login_required(webhook_url, paths["qr_file"], user)
                     if wait_for_login(driver):
                         login_success_flag = True
                         save_cookies(driver, paths["cookie_file"])
                         if webhook_url:
-                            notify_login_success(webhook_url)
+                            notify_login_success(webhook_url, user)
                         break
                     log.warning("第 %d 次扫码超时（%d 秒），剩余重试 %d 次", attempt, LOGIN_TIMEOUT, 1 + LOGIN_MAX_RETRIES - attempt)
                 if not login_success_flag:
                     err_msg = f"扫码登录失败：在 {1 + LOGIN_MAX_RETRIES} 次尝试内均未完成扫码（每次等待 {LOGIN_TIMEOUT} 秒）"
                     log.error("%s，程序退出", err_msg)
                     if webhook_url:
-                        notify_error(webhook_url, err_msg, get_recent_log_lines(30))
+                        notify_error(webhook_url, err_msg, get_recent_log_lines(paths["log_file"], 30), user)
                     return 1
         else:
             log.info("步骤 3/5: 登录状态有效，跳过")
@@ -736,6 +802,7 @@ def main() -> int:
                 turn_count=summary["turn_count"],
                 duration_sec=summary["duration_sec"],
                 book_ended=summary["book_ended"],
+                user=user,
             )
 
     except KeyboardInterrupt:
@@ -749,12 +816,12 @@ def main() -> int:
             for h in logging.getLogger().handlers:
                 h.flush()
             err_msg = f"{type(e).__name__}: {e}\n\n{traceback.format_exc()}"
-            log_snippet = get_recent_log_lines(50)
-            notify_error(webhook_url, err_msg, log_snippet)
+            log_snippet = get_recent_log_lines(paths["log_file"], 50)
+            notify_error(webhook_url, err_msg, log_snippet, user)
     finally:
         if driver:
             log.info("正在关闭 Chrome 浏览器...")
-            driver.quit()
+            quit_driver_safe(driver)
             log.info("浏览器已关闭")
         log.info("程序退出，退出码: %d", exit_code)
 
