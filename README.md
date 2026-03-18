@@ -1,0 +1,187 @@
+# 微信读书自动化阅读程序
+
+使用 Chrome 浏览器自动化访问微信读书网页版，扫码登录后根据书名搜索并打开书籍，模拟用户阅读指定时长后关闭浏览器。
+
+**支持平台**：Linux (Ubuntu) / macOS
+
+## 环境要求
+
+- Python 3.8+
+- Chrome 或 Chromium 浏览器
+- 网络连接
+- 有图形界面：直接运行；无图形界面（如 Ubuntu Server）：设置 `headless: true`，二维码保存到 `data/login.png` 供下载扫码
+
+## 安装
+
+```bash
+pip install -r requirements.txt
+```
+
+## 平台说明
+
+### Ubuntu / Linux
+
+1. **安装 Chrome 或 Chromium**（二选一）：
+
+   ```bash
+   # 方式一：Google Chrome
+   wget https://dl.google.com/linux/direct/google-chrome-stable_current_amd64.deb
+   sudo dpkg -i google-chrome-stable_current_amd64.deb
+   sudo apt-get install -f
+
+   # 方式二：Chromium（系统自带源）
+   sudo apt update
+   sudo apt install chromium-browser
+   ```
+
+2. **依赖**（Chromium 可能需要）：
+
+   ```bash
+   sudo apt install -y libnss3 libatk1.0-0 libatk-bridge2.0-0 libcups2 libdrm2 libxkbcommon0 libxcomposite1 libxdamage1 libxfixes3 libxrandr2 libgbm1 libasound2
+   ```
+
+3. **无图形界面（Ubuntu Server / SSH）**：在 `config.json` 中设置 `"headless": true` 即可直接运行，无需 Xvfb：
+
+   - Chrome 在后台运行，不依赖显示器
+   - 截图、翻页等操作均可正常执行
+   - 首次登录时二维码会保存到 `data/login.png`，用 `scp` 等方式下载到本地后用微信扫码
+   - 建议同时设置 `"use_cookie_login": true`，登录一次后后续可免扫码
+
+### Ubuntu Server（无图形界面）
+
+在无显示器的服务器上运行，需在 `config.json` 中设置 `"headless": true`：
+
+```json
+{
+  "headless": true,
+  "use_cookie_login": true
+}
+```
+
+**首次登录流程**：
+1. 运行程序，点击登录后二维码会保存到 `data/login.png`
+2. 用 `scp user@server:/path/to/weread/data/login.png .` 下载到本地
+3. 用微信扫描该图片完成登录
+4. 登录成功后 cookies 会保存，下次可免扫码
+
+**截图**：无头模式下 `driver.save_screenshot()` 和 `element.screenshot()` 均可正常使用，二维码保存到 `data/login.png` 即依赖此能力。
+
+### macOS
+
+1. **安装 Chrome**：
+
+   ```bash
+   # 使用 Homebrew
+   brew install --cask google-chrome
+   ```
+
+   或从 [Chrome 官网](https://www.google.com/chrome/) 下载安装。
+
+2. 首次运行若提示「无法验证开发者」，请在 **系统设置 → 隐私与安全性** 中允许运行。
+
+## 命令行参数
+
+| 参数 | 说明 |
+|------|------|
+| `-h`, `--help` | 显示程序使用说明并退出 |
+| `-b 书名`, `--book 书名` | 指定要阅读的书名。不指定则从读书列表中随机选取一本 |
+| `-H`, `--headless` | 强制无头模式，用于在 Mac/Ubuntu 桌面测试无头行为 |
+
+### 使用示例
+
+```bash
+# 查看使用说明
+python main.py -h
+
+# 从读书列表随机选书（需先配置 books.txt）
+python main.py
+
+# 指定阅读《三体》
+python main.py -b 三体
+python main.py --book 三体
+
+# 在 Mac/Ubuntu 桌面模拟无头模式测试
+python main.py -H -b 三体
+```
+
+### 运行环境与模式
+
+| 环境 | 行为 | 说明 |
+|------|------|------|
+| Ubuntu 有图形 | 有头模式 | 弹出 Chrome 窗口，二维码直接显示 |
+| Ubuntu 无图形 (Server) | **自动**无头 | 检测无 DISPLAY 时自动切换，二维码保存到 `data/login.png` |
+| Mac | 有头模式 | 弹出 Chrome 窗口；加 `-H` 可测试无头 |
+| 任意环境 | 强制无头 | `config.json` 中 `"headless": true` 或命令行 `-H` |
+
+同一份代码和配置可在三种环境下运行，无需修改。
+
+## 配置 (config.json)
+
+| 配置项 | 说明 | 默认值 |
+|--------|------|--------|
+| book_list_file | 读书列表文件路径，每行一个书名 | books.txt |
+| reading_duration | 每次阅读时长（秒） | 60 |
+| use_cookie_login | 是否使用 Cookie 登录（设为 false 可方便调试扫码流程） | true |
+| headless | 无头模式（无图形界面，适用于 Ubuntu Server） | false |
+| wechat_webhook_url | 企业微信机器人 Webhook 地址，用于任务通知（crontab 场景） | 空 |
+
+### 企业微信通知（crontab 场景）
+
+当配置 `wechat_webhook_url` 后，程序会在以下时机通过企业微信 Bot 发送通知：
+
+- **任务开始**：程序启动时，告知目标书籍
+- **登录过期**：Cookie 失效需扫码时，发送 data 目录下的二维码图片 + 扫码说明
+- **登录成功**：扫码完成后，告知登录成功并继续执行
+- **任务完成**：阅读结束后，发送摘要（书籍、阅读时长、滚动/翻页次数等）
+- **执行出错**：发生异常时，发送错误信息和最近日志
+
+获取 Webhook 地址：在企业微信群中添加机器人，从机器人信息卡中复制 Webhook 地址。
+
+**crontab 示例**（每天 9 点执行）：
+
+```bash
+0 9 * * * cd /path/to/weread && /path/to/python main.py >> log/cron.log 2>&1
+```
+
+## 读书列表 (books.txt)
+
+每行一个书名。未使用 `-b` 指定书名时，程序会从此列表中**随机**选取一本：
+
+```
+三体
+活着
+人类简史
+```
+
+## 日志
+
+- 控制台：实时输出
+- 文件：`log/weread.log`（与程序同目录）
+
+## 首次登录
+
+点击登录后，二维码会保存到 `data/login.png`，便于远程或无头环境扫码。
+
+## 流程说明
+
+1. **启动浏览器**：以非无头模式打开 Chrome，访问 [weread.qq.com](https://weread.qq.com)
+2. **登录**：根据配置使用 Cookie 或扫码；扫码时二维码保存至 `data/login.png`
+3. **搜索书籍**：从 `-b` 参数或读书列表随机获取书名，搜索并打开第一本
+4. **模拟阅读**：随机滚动、翻页，持续 `reading_duration` 秒
+5. **关闭**：完成后自动关闭浏览器
+
+## 注意事项
+
+- 若出现「双重验证码」，请在网页上手动输入验证码
+- 微信读书禁止使用第三方插件或修改过的客户端，本程序仅供个人学习使用，请勿滥用
+- 若微信读书改版，页面选择器可能需要调整
+
+## 常见问题
+
+| 问题 | 解决方式 |
+|------|----------|
+| Ubuntu: `Chrome not found` | 安装 Chrome 或 Chromium（见上方平台说明），或确认 `which google-chrome` / `which chromium-browser` 有输出 |
+| Ubuntu: 依赖缺失 | 执行 `sudo apt install libnss3 libatk1.0-0 libgbm1` 等（见平台说明） |
+| macOS: 无法打开 Chrome | 在系统设置中允许运行来自未知开发者的应用 |
+| 无图形界面（Server） | 在 config.json 中设置 `"headless": true`，二维码会保存到 `data/login.png`，用 scp 下载后扫码 |
+| 无头模式截图失败 | 确认 Chrome 版本支持 headless，并已安装 `libgbm1` 等依赖 |
