@@ -1,0 +1,21 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "weread"
+version = "0.1.0"
+description = "微信读书自动化阅读程序"
+requires-python = ">=3.10"
+dependencies = [
+    "selenium>=4.15.0",
+    "webdriver-manager>=4.0.0",
+    "requests>=2.28.0",
+]
+
+[project.scripts]
+weread = "main:main"
+weread-add-user = "add_user:main"
+
+[tool.setuptools]
+py-modules = ["main", "wechat_notify", "add_user"]
