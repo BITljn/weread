@@ -4,16 +4,19 @@
 
 用法: python add_user.py <用户名> [选项]
 
+默认行为：若未指定 -b 或 -f，会从根目录复制 books.txt 到新用户目录。
+
 选项:
   -w, --webhook <url>    企业微信 Webhook 地址
   -b, --book <书名>       添加一本书，可多次使用
   -f, --file <文件>       从文件读取图书列表（每行一书名）
-  -n, --no-copy          不复制根目录 books.txt
+  -n, --no-copy          不复制根目录 books.txt（仅在未指定书信息时生效）
 
 示例:
-  python add_user.py user1
+  python add_user.py user1                    # 复制根目录 books.txt
   python add_user.py user1 -b 三体 -b 活着
   python add_user.py user1 -f my_books.txt
+  python add_user.py user1 -n                 # 不复制，创建空列表
   python add_user.py user1 -w "https://..." -b 人类简史
 """
 
@@ -32,9 +35,10 @@ def main() -> int:
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 示例:
-  %(prog)s user1
+  %(prog)s user1                    复制根目录 books.txt
   %(prog)s user1 -b 三体 -b 活着
   %(prog)s user1 -f my_books.txt
+  %(prog)s user1 -n                 不复制，创建空列表
   %(prog)s user1 -w "https://..." -b 人类简史
         """,
     )
@@ -42,7 +46,7 @@ def main() -> int:
     parser.add_argument("-w", "--webhook", metavar="url", help="企业微信 Webhook 地址")
     parser.add_argument("-b", "--book", metavar="书名", action="append", help="添加一本书，可多次使用")
     parser.add_argument("-f", "--file", metavar="文件", help="从文件读取图书列表（每行一书名）")
-    parser.add_argument("-n", "--no-copy", action="store_true", help="不复制根目录 books.txt")
+    parser.add_argument("-n", "--no-copy", action="store_true", help="不复制根目录 books.txt（默认会复制）")
     args = parser.parse_args()
 
     user = args.user
@@ -79,7 +83,6 @@ def main() -> int:
             print(f"配置文件已存在: {config_path}")
     else:
         cfg = {
-            "use_cookie_login": True,
             "wechat_webhook_url": webhook,
         }
         with open(config_path, "w", encoding="utf-8") as f:
@@ -105,7 +108,13 @@ def main() -> int:
         return len(unique)
 
     if books_path.exists() and not books and not book_file:
-        print(f"读书列表已存在: {books_path}")
+        existing = read_books(books_path)
+        if not existing and not no_copy and ROOT_BOOKS.exists():
+            titles = read_books(ROOT_BOOKS)
+            count = write_books(books_path, titles)
+            print(f"已复制根目录 books.txt 到: {books_path} ({count} 本书)")
+        else:
+            print(f"读书列表已存在: {books_path}")
     elif books_path.exists() and (books or book_file):
         existing = read_books(books_path)
         new_from_file = read_books(Path(book_file)) if book_file and Path(book_file).exists() else []
@@ -113,10 +122,10 @@ def main() -> int:
         count = write_books(books_path, merged)
         print(f"已追加图书到: {books_path} ({count} 本书)")
     else:
+        # 新建用户：默认复制根目录 books.txt（除非 -n）
         titles = []
         if not no_copy and ROOT_BOOKS.exists():
             titles = read_books(ROOT_BOOKS)
-            print(f"已复制根目录读书列表到: {books_path}")
         if book_file:
             fp = Path(book_file)
             if fp.exists():
@@ -126,12 +135,19 @@ def main() -> int:
                 print(f"警告: 文件不存在 {book_file}", file=sys.stderr)
         titles.extend(books)
         count = write_books(books_path, titles)
-        if count:
-            print(f"读书列表: {books_path} ({count} 本书)")
-        else:
-            print(f"读书列表为空，请使用 -b 或 -f 添加，或复制 {ROOT_BOOKS} 到 {books_path}")
 
-    print(f"用户 {user} 添加完成。运行: ./run_weread.sh {user}")
+        if count:
+            if not no_copy and ROOT_BOOKS.exists() and not books and not book_file:
+                print(f"已复制根目录 books.txt 到: {books_path} ({count} 本书)")
+            else:
+                print(f"读书列表: {books_path} ({count} 本书)")
+        else:
+            if not no_copy and ROOT_BOOKS.exists():
+                print(f"根目录 {ROOT_BOOKS} 为空，请使用 -b 或 -f 添加图书")
+            else:
+                print(f"用户未指定图书，复制根目录图书: cp {ROOT_BOOKS} {books_path}")
+
+    print(f"用户 {user} 添加完成。请手动运行: ./run_weread.sh {user} 进行验证")
     return 0
 
 

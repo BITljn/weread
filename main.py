@@ -75,10 +75,10 @@ DEFAULT_GLOBAL = {
     "book_list_file": "books.txt",
     "reading_duration": 60,
     "headless": False,
+    "use_cookie_login": True,
 }
 
 DEFAULT_USER = {
-    "use_cookie_login": True,
     "wechat_webhook_url": "",
 }
 

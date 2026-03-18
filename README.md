@@ -137,7 +137,7 @@ python main.py -u user1
 |------|------|------|--------|
 | book_list_file | string | 读书列表文件名；用户目录有 books.txt 时不生效 | 使用全局配置 |
 | reading_duration | number | 每次阅读时长（秒），也支持 `duration` | 使用公共配置 |
-| use_cookie_login | boolean | 是否使用 Cookie 登录（免扫码） | true |
+| use_cookie_login | boolean | 是否使用 Cookie 登录（免扫码），默认来自全局 | 使用全局配置 |
 | wechat_webhook_url | string | 企业微信机器人 Webhook（**仅能在此配置**） | "" |
 
 **读书列表路径**：`book_list_file` 为相对路径时，解析为 `data/users/{用户}/{book_list_file}`。
@@ -148,7 +148,6 @@ python main.py -u user1
 {
   "book_list_file": "books.txt",
   "reading_duration": 90,
-  "use_cookie_login": true,
   "wechat_webhook_url": "https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=xxx"
 }
 ```
@@ -160,7 +159,8 @@ python main.py -u user1
   "execution_time": "",
   "book_list_file": "books.txt",
   "reading_duration": 60,
-  "headless": true
+  "headless": true,
+  "use_cookie_login": true
 }
 ```
 
@@ -171,7 +171,7 @@ python main.py -u user1
 | book_list_file | 公共/用户 | 读书列表文件名，用户私有目录下解析为 `data/users/{用户}/` | books.txt |
 | reading_duration | 公共/用户 | 每次阅读时长（秒） | 60 |
 | headless | 公共/用户 | 无头模式 | false |
-| use_cookie_login | 用户 | 是否使用 Cookie 登录 | true |
+| use_cookie_login | 全局/用户 | 是否使用 Cookie 登录（免扫码） | true |
 | wechat_webhook_url | **仅用户** | 企业微信机器人 Webhook，公共配置不可覆盖 | "" |
 
 ### 用户数据目录
