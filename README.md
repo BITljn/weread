@@ -184,6 +184,40 @@ python main.py -u user1
 - `last_read.json`：上次阅读记录
 - `weread.log`：执行日志（指定用户时写入该目录）
 
+### 添加用户 (add_user.py)
+
+使用 `add_user.py` 创建新用户，自动创建目录、私有配置和读书列表。默认会复制根目录的 `books.txt` 到用户目录。
+
+```bash
+# 查看帮助
+python add_user.py -h
+
+# 添加用户（默认复制根目录读书列表）
+python add_user.py user1
+
+# 添加用户并指定 Webhook
+python add_user.py user1 -w "https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=xxx"
+
+# 添加用户并指定图书（可多次 -b）
+python add_user.py user1 -b 三体 -b 活着 -b 人类简史
+
+# 从文件导入图书列表
+python add_user.py user1 -f my_books.txt
+
+# 不复制根目录，仅使用指定的书
+python add_user.py user1 -n -b 三体 -b 活着
+
+# 组合使用
+python add_user.py user1 -w "https://..." -b 三体 -f shared_books.txt
+```
+
+| 选项 | 说明 |
+|------|------|
+| `-w`, `--webhook <url>` | 企业微信 Webhook 地址 |
+| `-b`, `--book <书名>` | 添加一本书，可多次使用 |
+| `-f`, `--file <文件>` | 从文件读取图书列表（每行一书名） |
+| `-n`, `--no-copy` | 不复制根目录 books.txt |
+
 ### 企业微信通知（crontab 场景）
 
 当配置 `wechat_webhook_url` 后，程序会在以下时机通过企业微信 Bot 发送通知：
