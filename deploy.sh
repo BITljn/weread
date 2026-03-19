@@ -1,9 +1,9 @@
 #!/bin/bash
-# 打包部署到 /home/ubuntu/deploy（site-packages 安装模式）
+# 打包部署到 /home/ubuntu/deploy/weread（site-packages 安装模式）
 # 用法: ./deploy.sh
 
 set -e
-DEPLOY_DIR="/home/ubuntu/deploy"
+DEPLOY_DIR="/home/ubuntu/deploy/weread"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 
 echo "==> 部署到 $DEPLOY_DIR"
@@ -27,12 +27,8 @@ if [ -d data ]; then
 fi
 cp "$WHEEL" "$DEPLOY_DIR/"
 
-# 清理 deploy 目录中的垃圾（源码、构建产物等）
-cd "$DEPLOY_DIR"
-rm -f main.py wechat_notify.py add_user.py pyproject.toml
-rm -rf weread.egg-info __pycache__ dist/
-
 # 创建 venv 并安装 weread 包（site-packages 方式）
+cd "$DEPLOY_DIR"
 if [ ! -d venv ]; then
     echo "==> 创建虚拟环境..."
     for py in "$HOME/.pyenv/versions/3.12.3/envs/weread/bin/python3" python3; do
