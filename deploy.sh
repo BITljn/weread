@@ -20,11 +20,7 @@ if [ -z "$WHEEL" ]; then
     exit 1
 fi
 
-# 复制配置和数据（不复制源码）
-cp global.json books.txt "$DEPLOY_DIR/" 2>/dev/null || true
-if [ -d data ]; then
-    cp -r data "$DEPLOY_DIR/"
-fi
+# 仅复制 wheel（不复制 global 配置、用户私有配置和 books.txt）
 cp "$WHEEL" "$DEPLOY_DIR/"
 
 # 创建 venv 并安装 weread 包（site-packages 方式）
