@@ -82,6 +82,7 @@ DEFAULT_GLOBAL = {
     "book_list_file": "books.txt",
     "reading_duration": 60,
     "headless": False,
+    "use_xvfb": False,
     "use_cookie_login": True,
 }
 
@@ -192,10 +193,14 @@ def setup_logging(log_file: Path) -> None:
 def should_use_headless(config: dict) -> bool:
     """
     判断是否使用无头模式，支持有/无图形界面的 Ubuntu 与 Mac。
+    - 配置 use_xvfb=true：强制有头（通过 Xvfb 虚拟显示器），用于规避 headless 不统计时长的问题
     - 配置 headless=true：强制无头
     - Linux 且无 DISPLAY：自动无头（Ubuntu Server）
     - 否则：有头模式（Ubuntu 桌面 / Mac）
     """
+    if config.get("use_xvfb", False):
+        # 使用 Xvfb 虚拟显示器运行有头 Chrome，避免被检测为 headless 导致阅读时长不统计
+        return False
     if config.get("headless", False):
         return True
     if platform.system() == "Linux" and not os.environ.get("DISPLAY"):
@@ -369,6 +374,10 @@ def create_driver(headless: bool = False) -> webdriver.Chrome:
         options.add_argument("--disable-gpu")
         options.add_argument("--disable-dev-shm-usage")
         options.add_argument("--disable-software-rasterizer")
+        # 伪装 User-Agent，降低 HeadlessChrome 指纹被检测概率（部分网站如微信读书会据此不统计时长）
+        options.add_argument(
+            "--user-agent=Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
+        )
         log.info("无头模式：Chrome 在后台运行，截图将保存到 data/login.png 供扫码")
     # 跨平台：显式指定 Chrome 路径（若检测到），避免 Linux/Ubuntu 下找不到
     chrome_path = get_chrome_path()
@@ -380,8 +389,15 @@ def create_driver(headless: bool = False) -> webdriver.Chrome:
     driver = webdriver.Chrome(service=service, options=options)
     driver.set_page_load_timeout(PAGE_LOAD_TIMEOUT)
     driver.set_script_timeout(SCRIPT_TIMEOUT)
-    driver.execute_script(
-        "Object.defineProperty(navigator, 'webdriver', {get: () => undefined})"
+    # 反检测：在页面加载前注入脚本，降低自动化指纹被识别的概率
+    driver.execute_cdp_cmd(
+        "Page.addScriptToEvaluateOnNewDocument",
+        {
+            "source": """
+                Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
+                Object.defineProperty(navigator, 'languages', { get: () => ['zh-CN', 'zh', 'en'] });
+            """
+        },
     )
     return driver
 

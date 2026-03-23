@@ -1,7 +1,8 @@
 {
   "execution_time": "",
   "book_list_file": "books.txt",
-  "reading_duration": 70,
+  "reading_duration": 100,
   "headless": true,
+  "use_xvfb": false,
   "use_cookie_login": true
 }

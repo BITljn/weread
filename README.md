@@ -66,6 +66,20 @@ pip install -r requirements.txt
 
 **截图**：无头模式下 `driver.save_screenshot()` 和 `element.screenshot()` 均可正常使用，二维码保存到 `data/users/{用户}/login.png` 即依赖此能力。
 
+#### headless 不统计阅读时长？
+
+微信读书可能检测 headless 模式并拒绝统计阅读时长。若需正常统计，请使用 **Xvfb 虚拟显示器** 运行有头 Chrome：
+
+1. 安装 Xvfb：`sudo apt install -y xvfb`
+2. 在 `global.json` 中设置 `"use_xvfb": true`（可同时保留 `"headless": true`，程序会自动忽略）
+3. 使用 `run_weread.sh` 执行时，脚本会自动检测并调用 `xvfb-run`；若直接运行，需手动加前缀：
+
+   ```bash
+   xvfb-run -a python main.py -u admin
+   ```
+
+原理：Xvfb 提供虚拟显示器，Chrome 以有头模式运行（对网站而言是正常浏览器），从而规避 headless 检测。
+
 ### macOS
 
 1. **安装 Chrome**：
@@ -171,6 +185,7 @@ python main.py -u user1
 | book_list_file | 公共/用户 | 读书列表文件名，用户私有目录下解析为 `data/users/{用户}/` | books.txt |
 | reading_duration | 公共/用户 | 每次阅读时长（秒） | 60 |
 | headless | 公共/用户 | 无头模式 | false |
+| use_xvfb | 公共/用户 | 使用 Xvfb 虚拟显示器运行有头 Chrome（规避 headless 不统计时长），需安装 xvfb，run_weread.sh 会自动调用 xvfb-run | false |
 | use_cookie_login | 全局/用户 | 是否使用 Cookie 登录（免扫码） | true |
 | wechat_webhook_url | **仅用户** | 企业微信机器人 Webhook，公共配置不可覆盖 | "" |
 
@@ -282,3 +297,4 @@ python add_user.py user1 -w "https://..." -b 三体 -f shared_books.txt
 | macOS: 无法打开 Chrome | 在系统设置中允许运行来自未知开发者的应用 |
 | 无图形界面（Server） | 在 global.json 中设置 `"headless": true`，二维码会保存到 `data/users/{用户}/login.png`，用 scp 下载后扫码 |
 | 无头模式截图失败 | 确认 Chrome 版本支持 headless，并已安装 `libgbm1` 等依赖 |
+| headless 不统计阅读时长 | 设置 `"use_xvfb": true`，安装 xvfb，用 `run_weread.sh` 或 `xvfb-run -a python main.py` 运行 |
